@@ -10,7 +10,6 @@ class marta_export_products {
 
 	public function export_products_page() {
 		add_submenu_page('edit.php?post_type=product', __( 'Export products to CSV', 'marta' ), __( 'Export products', 'marta' ), 'edit_others_posts', 'products-export', array( $this, 'products_export_page' ) );
-		//add_users_page( __( 'Export products to CSV', 'marta' ), __( 'Export products', 'marta' ), 'edit_others_posts', 'products-export', array( $this, 'products_export_page' ) );
 	}
 
 	public function generate_products_csv() {

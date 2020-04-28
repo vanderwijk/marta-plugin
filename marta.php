@@ -1,11 +1,11 @@
 <?php
 /*
 Plugin Name: marta;
-Plugin URI: http://martaonline.nl
+Plugin URI: https://martaonline.eu
 Description: Kitchen sink for marta;
 Author: Johan van der Wijk
 Version: 1.2
-Author URI: http://vanderwijk.nl
+Author URI: https://vanderwijk.nl
 */
 
 // Load plugin translations textdomain
