@@ -34,4 +34,4 @@ function register_cpt_product() {
 	);
 	register_post_type( 'product', $args );
 }
-add_action( 'init', 'register_cpt_product' );
+//add_action( 'init', 'register_cpt_product' );

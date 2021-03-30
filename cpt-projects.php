@@ -35,7 +35,7 @@ function register_cpt_project() {
 		'label'                 => __( 'Project', 'marta' ),
 		'description'           => __( 'Projects made with marta; products', 'marta' ),
 		'labels'                => $labels,
-		'supports'              => array( 'title', 'editor', 'revisions', ),
+		'supports'              => array( 'title', 'editor', 'revisions', 'thumbnail'),
 		'taxonomies'            => array( ),
 		'hierarchical'          => true,
 		'public'                => true,
@@ -51,6 +51,7 @@ function register_cpt_project() {
 		'publicly_queryable'    => true,
 		'rewrite' => array( 'slug' => __( 'projects', 'marta' ) ),
 		'capability_type'       => 'page',
+		'show_in_rest' => true,
 	);
 	register_post_type( 'project', $args );
 
