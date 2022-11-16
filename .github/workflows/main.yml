@@ -15,5 +15,5 @@ jobs:
       
       # Deploy vars
         WPE_ENV: martaonline
-        REMOTE_PATH: "wp-content/themes/marta-plugin/"
+        REMOTE_PATH: "wp-content/plugins/marta-plugin/"
         WPE_SSHG_KEY_PRIVATE: ${{ secrets.WPE_SSHG_KEY_PRIVATE }}
