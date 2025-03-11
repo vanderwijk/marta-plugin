@@ -4,7 +4,7 @@ Plugin Name: marta;
 Plugin URI: https://martaonline.eu
 Description: Kitchen sink for marta;
 Author: Johan van der Wijk
-Version: 2.0.1
+Version: 2.0.2
 Author URI: https://vanderwijk.nl
 */
 
