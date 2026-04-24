@@ -27,12 +27,12 @@ add_action( 'admin_menu', 'marta_remove_menus' );
 
 
 function marta_after_cart_button() {
-	echo '<p style="margin-top: 20px;"><a href="/buy/">Where to buy ?</a></p>';
+	/*echo '<p style="margin-top: 20px;"><a href="/buy/">Where to buy ?</a></p>';*/
 	echo '<p><a href="/professionals/">Are you a professional ?</a></p>';
 }
 add_action( 'woocommerce_after_add_to_cart_button', 'marta_after_cart_button' );
 
-
+/*
 add_filter('gettext', function ($translated_text, $text, $domain) {
 
 	switch ($translated_text) {
@@ -80,3 +80,4 @@ add_filter('gettext', function ($translated_text, $text, $domain) {
 	return $translated_text;
 
 }, 20, 3);
+*/
