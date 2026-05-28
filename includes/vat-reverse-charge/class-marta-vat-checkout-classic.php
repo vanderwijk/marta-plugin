@@ -38,6 +38,7 @@ class Marta_VAT_Checkout_Classic {
 		add_action( 'woocommerce_checkout_update_order_review', array( $this, 'on_ajax_recalc' ), 10, 1 );
 		add_action( 'woocommerce_checkout_update_order_meta', array( $this, 'update_order_meta' ) );
 		add_filter( 'woocommerce_checkout_get_value', array( $this, 'restore_checkout_value' ), 10, 2 );
+		add_action( 'wp_footer', array( $this, 'enqueue_checkout_recalc_script' ), 20 );
 	}
 
 	/**
@@ -52,7 +53,7 @@ class Marta_VAT_Checkout_Classic {
 			'label'       => __( 'VAT number (EU business)', 'marta' ),
 			'placeholder' => __( 'Optional', 'marta' ),
 			'required'    => false,
-			'class'       => array( 'form-row-wide' ),
+			'class'       => array( 'form-row-wide', 'update_totals_on_change' ),
 			'priority'    => 35,
 			'clear'       => true,
 		);
@@ -206,5 +207,29 @@ class Marta_VAT_Checkout_Classic {
 		}
 
 		return $value;
+	}
+
+	/**
+	 * Trigger checkout recalc shortly after VAT field input.
+	 *
+	 * @return void
+	 */
+	public function enqueue_checkout_recalc_script(): void {
+		if ( ! function_exists( 'is_checkout' ) || ! is_checkout() || is_wc_endpoint_url() ) {
+			return;
+		}
+		?>
+		<script>
+			(function($){
+				var timer = null;
+				$(document.body).on('input change', '#billing_vat_number', function() {
+					window.clearTimeout(timer);
+					timer = window.setTimeout(function() {
+						$(document.body).trigger('update_checkout');
+					}, 450);
+				});
+			})(jQuery);
+		</script>
+		<?php
 	}
 }

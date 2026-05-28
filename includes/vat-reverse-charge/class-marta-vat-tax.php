@@ -37,6 +37,7 @@ class Marta_VAT_Tax {
 		add_action( 'woocommerce_checkout_create_order', array( $this, 'persist_checkout_meta' ) );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', array( $this, 'store_api_before_totals' ), 10, 2 );
 		add_filter( 'woocommerce_order_get_formatted_billing_address', array( $this, 'append_vat_to_billing_address' ), 10, 3 );
+		add_action( 'woocommerce_review_order_after_order_total', array( $this, 'render_reverse_charge_notice_row' ) );
 	}
 
 	/**
@@ -185,5 +186,44 @@ class Marta_VAT_Tax {
 		}
 
 		return $address . '<br/>' . esc_html( sprintf( 'VAT: %s%s', $country, $number ) );
+	}
+
+	/**
+	 * Render a short reverse-charge note on checkout.
+	 *
+	 * @return void
+	 */
+	public function render_reverse_charge_notice_row(): void {
+		if ( ! is_checkout() || is_wc_endpoint_url() || ! $this->is_reverse_charge_active() ) {
+			return;
+		}
+		?>
+		<tr class="marta-reverse-charge-note">
+			<th><?php esc_html_e( 'VAT notice', 'marta' ); ?></th>
+			<td data-title="<?php esc_attr_e( 'VAT notice', 'marta' ); ?>">
+				<small><?php esc_html_e( 'EU reverse charge applies - VAT to be accounted for by the recipient.', 'marta' ); ?></small>
+			</td>
+		</tr>
+		<?php
+	}
+
+	/**
+	 * Whether reverse-charge conditions are currently met.
+	 *
+	 * @return bool
+	 */
+	private function is_reverse_charge_active(): bool {
+		if ( ! WC()->customer ) {
+			return false;
+		}
+
+		$payload         = WC()->session ? WC()->session->get( self::SESSION_KEY ) : null;
+		$billing_country = strtoupper( (string) WC()->customer->get_billing_country() );
+		$base_location   = wc_get_base_location();
+		$shop_country    = isset( $base_location['country'] ) ? strtoupper( $base_location['country'] ) : '';
+		$is_valid_vat    = is_array( $payload ) && isset( $payload['status'] ) && 'valid' === $payload['status'];
+		$is_eu           = is_array( $payload ) && ! empty( $payload['country_code'] );
+
+		return $this->should_apply_reverse_charge( $billing_country, $shop_country, $payload, $is_eu, $is_valid_vat );
 	}
 }
