@@ -20,7 +20,7 @@ class Marta_VIES_Client {
 	 */
 	public function check( string $country_code, string $vat_number ): array {
 		$country_code = strtoupper( trim( $country_code ) );
-		$vat_number   = strtoupper( preg_replace( '/\s+/', '', trim( $vat_number ) ) );
+		$vat_number   = strtoupper( preg_replace( '/[^A-Za-z0-9]/', '', trim( $vat_number ) ) );
 		/**
 		 * Filter VIES result for local tests or custom integrations.
 		 *
@@ -44,20 +44,27 @@ class Marta_VIES_Client {
 			return $cached;
 		}
 
+		$envelope = '<?xml version="1.0" encoding="UTF-8"?>'
+			. '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+			. ' xmlns:tns="urn:ec.europa.eu:taxud:vies:services:checkVat:types">'
+			. '<soap:Body><tns:checkVat>'
+			. '<tns:countryCode>' . esc_html( $country_code ) . '</tns:countryCode>'
+			. '<tns:vatNumber>' . esc_html( $vat_number ) . '</tns:vatNumber>'
+			. '</tns:checkVat></soap:Body></soap:Envelope>';
+
+		// SOAP is primary path; REST endpoint can be used as fallback only if explicitly added later.
 		$response = wp_remote_post(
-			'https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number',
+			'https://ec.europa.eu/taxation_customs/vies/services/checkVatService',
 			array(
-				'timeout' => 8,
-				'headers' => array(
-					'Content-Type' => 'application/json',
-					'Accept'       => 'application/json',
+				'timeout'     => 8,
+				'httpversion' => '1.1',
+				'headers'     => array(
+					'Content-Type' => 'text/xml; charset=utf-8',
+					'SOAPAction'   => '',
+					'User-Agent'   => 'marta-plugin/1.0 (+https://martaonline.eu)',
+					'Accept'       => 'text/xml',
 				),
-				'body'    => wp_json_encode(
-					array(
-						'countryCode' => $country_code,
-						'vatNumber'   => $vat_number,
-					)
-				),
+				'body'        => $envelope,
 			)
 		);
 
@@ -69,34 +76,45 @@ class Marta_VIES_Client {
 
 		$http_code = (int) wp_remote_retrieve_response_code( $response );
 		$body      = wp_remote_retrieve_body( $response );
-		$data      = json_decode( $body, true );
 
-		if ( 200 !== $http_code || ! is_array( $data ) ) {
+		if ( 200 !== $http_code || empty( $body ) ) {
 			$this->log_unreachable( $country_code, $vat_number, 'http_' . $http_code );
 
 			return $this->base_result( 'unreachable', null );
 		}
 
-		$is_valid = null;
+		$previous_libxml_state = libxml_use_internal_errors( true );
+		$xml                   = simplexml_load_string( $body );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $previous_libxml_state );
 
-		if ( isset( $data['isValid'] ) ) {
-			$is_valid = (bool) $data['isValid'];
-		} elseif ( isset( $data['valid'] ) ) {
-			$is_valid = (bool) $data['valid'];
+		if ( false === $xml ) {
+			$this->log_unreachable( $country_code, $vat_number, 'xml_parse_failed' );
+
+			return $this->base_result( 'unreachable', null );
 		}
 
-		if ( null === $is_valid ) {
-			$this->log_unreachable( $country_code, $vat_number, 'missing_validity_field' );
+		$valid_nodes = $xml->xpath( '//*[local-name()="valid"]' );
+		$name_nodes  = $xml->xpath( '//*[local-name()="name"]' );
+		$addr_nodes  = $xml->xpath( '//*[local-name()="address"]' );
+		$fault_nodes = $xml->xpath( '//*[local-name()="Fault"]' );
 
-			return $this->base_result( 'unreachable', $data );
+		if ( $fault_nodes ) {
+			$this->log_unreachable( $country_code, $vat_number, 'soap_fault' );
+
+			return $this->base_result( 'unreachable', null );
 		}
+
+		$is_valid = $valid_nodes && 'true' === strtolower( trim( (string) $valid_nodes[0] ) );
+		$name     = $name_nodes ? trim( (string) $name_nodes[0] ) : null;
+		$address  = $addr_nodes ? trim( (string) $addr_nodes[0] ) : null;
 
 		$result = array(
 			'status'     => $is_valid ? 'valid' : 'invalid',
-			'name'       => isset( $data['name'] ) && is_string( $data['name'] ) ? trim( $data['name'] ) : null,
-			'address'    => isset( $data['address'] ) && is_string( $data['address'] ) ? trim( $data['address'] ) : null,
+			'name'       => ( $name && '---' !== $name ) ? $name : null,
+			'address'    => ( $address && '---' !== $address ) ? $address : null,
 			'checked_at' => gmdate( 'c' ),
-			'raw'        => $data,
+			'raw'        => null,
 		);
 
 		if ( $is_valid ) {
