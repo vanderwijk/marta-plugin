@@ -238,3 +238,170 @@ Also: run `phpcs --standard=WordPress` over the new files; fix any errors.
 - Subscriptions / recurring order handling. This shop has no subscriptions and none are planned, so no renewal-side VAT logic is needed and `WC_Subscriptions` integration must not be added.
 - B2C distance-selling thresholds — assume the shop charges Dutch VAT to all EU consumers (the current default since the OSS scheme came in). If Marta is OSS-registered and wants per-country consumer VAT, that's a separate project.
 - Front-end "valid ✓" indicator as the user types. Validation happens on submit only — keeps VIES traffic down and avoids leaking typing patterns.
+
+---
+
+## 8. Known bug from the first implementation (must fix)
+
+During post-implementation smoke testing on 2026-05-28, the field rendered correctly and was included in the `update_order_review` AJAX payload, but the tax line did not change when a valid German VAT was entered with a German billing country, and no inline error appeared when an obviously invalid value was entered. Root cause: the validator was only wired into `woocommerce_checkout_process` (the form-submit gate), not into the AJAX recalculation that fires whenever a checkout field changes. As a result `WC()->session->get('marta_vat_status')` was never populated during recalcs, so `Marta_VAT_Tax::maybe_apply_reverse_charge()` always saw "no valid VAT" and never called `set_is_vat_exempt(true)`.
+
+**Required fix in `Marta_VAT_Checkout_Classic`** — add a second hook so validation runs both at AJAX-recalc time and at submit time:
+
+```php
+add_action( 'woocommerce_checkout_update_order_review', [ $this, 'on_ajax_recalc' ], 10, 1 );
+
+public function on_ajax_recalc( string $post_data ): void {
+    parse_str( $post_data, $parsed );
+    $country = $parsed['billing_country']    ?? '';
+    $vat     = $parsed['billing_vat_number'] ?? '';
+
+    if ( '' === trim( $vat ) ) {
+        WC()->session->set( 'marta_vat_status', null );
+        WC()->session->set( 'marta_vat_number', '' );
+        return;
+    }
+
+    $result = $this->validator->validate( $country, $vat );
+    WC()->session->set( 'marta_vat_status',      $result['status'] );   // valid | invalid | unreachable
+    WC()->session->set( 'marta_vat_number',      $vat );
+    WC()->session->set( 'marta_vat_country',     $country );
+    WC()->session->set( 'marta_vies_checked_at', $result['checked_at'] ?? '' );
+
+    if ( 'invalid' === $result['status'] ) {
+        wc_add_notice(
+            __( 'This VAT number is not valid in VIES. Please check or leave the field blank.', 'marta-plugin' ),
+            'error'
+        );
+    }
+}
+```
+
+Notes:
+- **Do not remove** the existing `woocommerce_checkout_process` hook. Keep it as the final submit-time gate; the AJAX hook is additive.
+- After the fix, the customer should see the tax line drop to €0 in real time as they fill the VAT field (no submit required), and see an inline error immediately if the number is malformed or VIES-rejected.
+- Re-run test scenarios 4 and 5 from section 4. Both must now pass *before submit*, not only at order creation.
+- Detected by Claude during browser-based smoke testing: country DE, VAT `DE129273398` (SAP), expected €0 tax, observed €73. Same field with `XX-NOT-A-VAT` produced no notice and no tax change — confirming the validator wasn't running during AJAX at all.
+
+---
+
+## 9. Second bug from the first implementation (must fix): VIES REST endpoint is unreachable from the server
+
+After the section-8 fix shipped, the AJAX hook was confirmed live (invalid VATs produce the inline error correctly). But valid VATs still don't trigger reverse charge. The WordPress debug log shows:
+
+```
+Marta VIES unreachable [DE12*****98]: wp_error: cURL error 56:
+OpenSSL SSL_read: error:0A000126:SSL routines::unexpected eof while reading, errno 0
+```
+
+cURL error 56 with "unexpected eof while reading" is a TLS-transport disconnect *after* the handshake — the server closed the socket without sending an HTTP response. The validator therefore returns `unreachable`, which by spec is a silent allow (no notice, no zero-rating), which is what we observe in the browser.
+
+This is not a bug in our code path; it's the EC REST endpoint behaving badly. **Fix: stop using REST and use the SOAP endpoint instead.** The SOAP service at `…/services/checkVatService` is the canonical, decades-old, well-behaved endpoint and is what every other VIES integration uses.
+
+### 9.1 Replace `Marta_VIES_Client::check()` with a SOAP implementation
+
+```php
+public function check( string $country_code, string $vat_number ): array {
+    $country = strtoupper( $country_code );
+    $number  = preg_replace( '/[^A-Za-z0-9]/', '', $vat_number );
+
+    $envelope = '<?xml version="1.0" encoding="UTF-8"?>'
+        . '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        . ' xmlns:tns="urn:ec.europa.eu:taxud:vies:services:checkVat:types">'
+        . '<soap:Body><tns:checkVat>'
+        . '<tns:countryCode>' . esc_html( $country ) . '</tns:countryCode>'
+        . '<tns:vatNumber>' . esc_html( $number ) . '</tns:vatNumber>'
+        . '</tns:checkVat></soap:Body></soap:Envelope>';
+
+    $response = wp_remote_post(
+        'https://ec.europa.eu/taxation_customs/vies/services/checkVatService',
+        [
+            'timeout'     => 8,
+            'httpversion' => '1.1', // important: avoid HTTP/2 quirks with EC front-end
+            'headers'     => [
+                'Content-Type' => 'text/xml; charset=utf-8',
+                'SOAPAction'   => '',
+                'User-Agent'   => 'marta-plugin/1.0 (+https://martaonline.eu)', // empty UA is rejected
+                'Accept'       => 'text/xml',
+            ],
+            'body'        => $envelope,
+        ]
+    );
+
+    if ( is_wp_error( $response ) ) {
+        $this->log_unreachable( $country, $number, 'wp_error: ' . $response->get_error_message() );
+        return [ 'status' => 'unreachable', 'name' => null, 'address' => null, 'checked_at' => gmdate( 'c' ), 'raw' => null ];
+    }
+
+    $code = wp_remote_retrieve_response_code( $response );
+    $body = wp_remote_retrieve_body( $response );
+
+    if ( 200 !== $code || ! $body ) {
+        $this->log_unreachable( $country, $number, 'http_' . $code );
+        return [ 'status' => 'unreachable', 'name' => null, 'address' => null, 'checked_at' => gmdate( 'c' ), 'raw' => null ];
+    }
+
+    // Parse SOAP response. Suppress libxml errors and recover from minor malformedness.
+    $prev = libxml_use_internal_errors( true );
+    $xml  = simplexml_load_string( $body );
+    libxml_clear_errors();
+    libxml_use_internal_errors( $prev );
+
+    if ( ! $xml ) {
+        $this->log_unreachable( $country, $number, 'xml_parse_failed' );
+        return [ 'status' => 'unreachable', 'name' => null, 'address' => null, 'checked_at' => gmdate( 'c' ), 'raw' => null ];
+    }
+
+    $xml->registerXPathNamespace( 's', 'urn:ec.europa.eu:taxud:vies:services:checkVat:types' );
+    $valid_nodes = $xml->xpath( '//s:valid' );
+    $name_nodes  = $xml->xpath( '//s:name' );
+    $addr_nodes  = $xml->xpath( '//s:address' );
+    $fault       = $xml->xpath( '//*[local-name()="Fault"]' );
+
+    if ( $fault ) {
+        // SOAP Fault means MS_UNAVAILABLE, INVALID_INPUT (handled upstream), etc. Treat as unreachable.
+        $this->log_unreachable( $country, $number, 'soap_fault' );
+        return [ 'status' => 'unreachable', 'name' => null, 'address' => null, 'checked_at' => gmdate( 'c' ), 'raw' => null ];
+    }
+
+    $is_valid = $valid_nodes && (string) $valid_nodes[0] === 'true';
+    $name     = $name_nodes ? trim( (string) $name_nodes[0] ) : null;
+    $address  = $addr_nodes ? trim( (string) $addr_nodes[0] ) : null;
+
+    return [
+        'status'     => $is_valid ? 'valid' : 'invalid',
+        'name'       => $name && $name !== '---' ? $name : null,
+        'address'    => $address && $address !== '---' ? $address : null,
+        'checked_at' => gmdate( 'c' ),
+        'raw'        => null, // do not persist raw SOAP envelope
+    ];
+}
+```
+
+### 9.2 Why each non-obvious detail matters
+
+- **`httpversion => '1.1'`**: the EC front-end sometimes EOFs HTTP/2 connections from cloud-IP ranges. Forcing 1.1 sidesteps this and is what produced the cURL 56 error.
+- **Non-empty `User-Agent`**: WP's default UA is empty, which some EC front-ends reject silently.
+- **`SOAPAction: ''` header**: SOAP 1.1 requires the header to exist even if empty; some intermediaries drop the request otherwise.
+- **`simplexml` over `SoapClient`**: the PHP `SoapClient` extension isn't installed on all hosts, and pre-fetching the WSDL adds a slow extra round-trip. Hand-built envelope is faster and dependency-free.
+- **Treat SOAP Faults as `unreachable`, not `invalid`**: faults mean "the member state's database is down" or similar transport problems, not "this VAT is wrong". Spec rule: don't block checkout on transport issues.
+
+### 9.3 Optional REST fallback
+
+If the EC SOAP endpoint also goes down (rare but it happens during maintenance windows), the agent *may* add a fallback to the REST endpoint *after* SOAP fails — but only after confirming SOAP works first. Do not implement REST as the primary path again.
+
+### 9.4 Verification (must rerun after fix)
+
+From the droplet:
+```
+curl -sS -m 8 -o /tmp/vies.xml -w "HTTP %{http_code} | %{time_total}s\n" \
+  --http1.1 \
+  -A 'marta-plugin/1.0' \
+  -H 'Content-Type: text/xml; charset=utf-8' \
+  -H 'SOAPAction: ' \
+  --data '<?xml version="1.0" encoding="UTF-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="urn:ec.europa.eu:taxud:vies:services:checkVat:types"><soap:Body><tns:checkVat><tns:countryCode>DE</tns:countryCode><tns:vatNumber>129273398</tns:vatNumber></tns:checkVat></soap:Body></soap:Envelope>' \
+  'https://ec.europa.eu/taxation_customs/vies/services/checkVatService'
+grep -E '(valid|name)' /tmp/vies.xml
+```
+Expected: `HTTP 200`, and `<valid>true</valid>` somewhere in the response.
+
+Then in the browser: reload `/checkout/`, set country to Germany, enter `DE129273398`. Tax line must drop to €0 (after at most one AJAX recalc — see also section 8 ordering note: exemption must be applied early enough that the *current* recalc reflects the zero rate).
