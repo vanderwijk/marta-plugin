@@ -15,8 +15,6 @@ require_once __DIR__ . '/class-marta-vat-checkout-block.php';
 require_once __DIR__ . '/class-marta-vat-checkout-classic.php';
 require_once __DIR__ . '/class-marta-vat-tax.php';
 require_once __DIR__ . '/class-marta-vat-order.php';
-require_once __DIR__ . '/class-marta-vat-self-test.php';
-require_once __DIR__ . '/class-marta-vat-diagnostics.php';
 
 final class Marta_VAT_Bootstrap {
 
@@ -33,11 +31,6 @@ final class Marta_VAT_Bootstrap {
 		( new Marta_VAT_Checkout_Classic( $validator ) )->register();
 		( new Marta_VAT_Tax() )->register();
 		( new Marta_VAT_Order( $vies ) )->register();
-		( new Marta_VAT_Self_Test() )->register();
-
-		if ( is_admin() ) {
-			( new Marta_VAT_Diagnostics() )->register();
-		}
 	}
 }
 
