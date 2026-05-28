@@ -4,7 +4,7 @@ Plugin Name: marta;
 Plugin URI: https://martaonline.eu
 Description: Kitchen sink for marta;
 Author: Johan van der Wijk
-Version: 2.0.2
+Version: 2.0.3
 Author URI: https://vanderwijk.nl
 */
 
@@ -17,6 +17,7 @@ add_action( 'plugins_loaded', 'translations_init' );
 require 'cpt-products.php';
 require 'cpt-projects.php';
 require 'export-products.php';
+require_once __DIR__ . '/includes/vat-reverse-charge/class-marta-vat-bootstrap.php';
 
 function marta_remove_menus() {
 	remove_menu_page( 'edit.php' );
