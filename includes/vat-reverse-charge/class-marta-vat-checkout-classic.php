@@ -35,6 +35,7 @@ class Marta_VAT_Checkout_Classic {
 	public function register(): void {
 		add_filter( 'woocommerce_checkout_fields', array( $this, 'add_checkout_field' ) );
 		add_action( 'woocommerce_checkout_process', array( $this, 'validate_checkout_field' ) );
+		add_action( 'woocommerce_checkout_update_order_review', array( $this, 'on_ajax_recalc' ), 10, 1 );
 		add_action( 'woocommerce_checkout_update_order_meta', array( $this, 'update_order_meta' ) );
 		add_filter( 'woocommerce_checkout_get_value', array( $this, 'restore_checkout_value' ), 10, 2 );
 	}
@@ -91,6 +92,62 @@ class Marta_VAT_Checkout_Classic {
 		if ( isset( $result['reason'] ) && 'not_eu' === $result['reason'] ) {
 			Marta_VAT_Tax::set_session_validation( array() );
 			Marta_VAT_Tax::set_vies_unreachable( false );
+			return;
+		}
+
+		if ( isset( $result['reason'] ) && 'format' === $result['reason'] ) {
+			wc_add_notice( __( 'VAT number format is invalid for the selected country.', 'marta' ), 'error' );
+		} elseif ( isset( $result['reason'] ) && 'country_mismatch' === $result['reason'] ) {
+			wc_add_notice( __( 'VAT number country prefix does not match billing country.', 'marta' ), 'error' );
+		} else {
+			wc_add_notice( __( 'This VAT number is not valid in VIES. Please check or leave the field blank.', 'marta' ), 'error' );
+		}
+	}
+
+	/**
+	 * Validate VAT during AJAX order review recalculation.
+	 *
+	 * @param string $post_data Serialized checkout form data.
+	 * @return void
+	 */
+	public function on_ajax_recalc( string $post_data ): void {
+		$parsed = array();
+		wp_parse_str( $post_data, $parsed );
+
+		$country = isset( $parsed['billing_country'] ) ? wc_strtoupper( sanitize_text_field( wp_unslash( $parsed['billing_country'] ) ) ) : '';
+		$raw_vat = isset( $parsed['billing_vat_number'] ) ? sanitize_text_field( wp_unslash( $parsed['billing_vat_number'] ) ) : '';
+
+		if ( '' === trim( $raw_vat ) ) {
+			Marta_VAT_Tax::set_session_validation( array() );
+			Marta_VAT_Tax::set_vies_unreachable( false );
+			return;
+		}
+
+		$result = $this->validator->validate( $country, $raw_vat );
+
+		if ( 'valid' === $result['status'] ) {
+			Marta_VAT_Tax::set_session_validation( $result );
+			Marta_VAT_Tax::set_vies_unreachable( false );
+			return;
+		}
+
+		if ( 'unreachable' === $result['status'] ) {
+			Marta_VAT_Tax::set_session_validation( array() );
+			Marta_VAT_Tax::set_vies_unreachable( true );
+			return;
+		}
+
+		Marta_VAT_Tax::set_session_validation(
+			array(
+				'status'       => 'invalid',
+				'country_code' => $country,
+				'vat_number'   => strtoupper( preg_replace( '/[\s\.\-]/', '', $raw_vat ) ),
+				'checked_at'   => gmdate( 'c' ),
+			)
+		);
+		Marta_VAT_Tax::set_vies_unreachable( false );
+
+		if ( isset( $result['reason'] ) && 'not_eu' === $result['reason'] ) {
 			return;
 		}
 
