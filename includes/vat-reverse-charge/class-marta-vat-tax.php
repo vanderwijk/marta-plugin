@@ -22,6 +22,17 @@ class Marta_VAT_Tax {
 	 * @return void
 	 */
 	public function register(): void {
+		/*
+		 * Hook BEFORE the cart computes line taxes — set_is_vat_exempt() only takes
+		 * effect on subsequent calculations, so calling it from
+		 * woocommerce_after_calculate_totals (the previous wiring) was too late and
+		 * the current AJAX recalculation still rendered full VAT. Hooking
+		 * woocommerce_before_calculate_totals at priority 1 makes the exemption
+		 * apply to this same recalc. Also keep the after_calculate_totals hook as a
+		 * defensive second pass so subsequent reads of the customer state are
+		 * consistent.
+		 */
+		add_action( 'woocommerce_before_calculate_totals', array( $this, 'maybe_apply_reverse_charge' ), 1 );
 		add_action( 'woocommerce_after_calculate_totals', array( $this, 'maybe_apply_reverse_charge' ), 1 );
 		add_action( 'woocommerce_checkout_create_order', array( $this, 'persist_checkout_meta' ) );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', array( $this, 'store_api_before_totals' ), 10, 2 );

@@ -52,33 +52,96 @@ class Marta_VIES_Client {
 			. '<tns:vatNumber>' . esc_html( $vat_number ) . '</tns:vatNumber>'
 			. '</tns:checkVat></soap:Body></soap:Envelope>';
 
-		// SOAP is primary path; REST endpoint can be used as fallback only if explicitly added later.
-		$response = wp_remote_post(
-			'https://ec.europa.eu/taxation_customs/vies/services/checkVatService',
-			array(
-				'timeout'     => 8,
-				'httpversion' => '1.1',
-				'headers'     => array(
-					'Content-Type' => 'text/xml; charset=utf-8',
-					'SOAPAction'   => '',
-					'User-Agent'   => 'marta-plugin/1.0 (+https://martaonline.eu)',
-					'Accept'       => 'text/xml',
-				),
-				'body'        => $envelope,
-			)
-		);
+		/*
+		 * Transport choice: PHP streams (file_get_contents) rather than wp_remote_post.
+		 *
+		 * Reason: on hosts running OpenSSL 3.x (e.g. WP Engine on Ubuntu 22.04, PHP 8.2)
+		 * the EU VIES TLS endpoint closes its TCP connection without sending a TLS
+		 * close_notify alert. cURL linked against OpenSSL 3 treats that as a fatal
+		 * SSL_R_UNEXPECTED_EOF_WHILE_READING error (cURL error 56), so wp_remote_post
+		 * always fails. PHP's stream wrapper handles the same shutdown gracefully and
+		 * returns the response body, so we go straight to streams here. We retain a
+		 * wp_remote_post fallback for environments where allow_url_fopen is disabled.
+		 */
+		$body  = null;
+		$error = null;
 
-		if ( is_wp_error( $response ) ) {
-			$this->log_unreachable( $country_code, $vat_number, 'wp_error: ' . $response->get_error_message() );
+		if ( ini_get( 'allow_url_fopen' ) ) {
+			$ctx = stream_context_create(
+				array(
+					'http' => array(
+						'method'           => 'POST',
+						'header'           =>
+							"Content-Type: text/xml; charset=utf-8\r\n" .
+							"SOAPAction: \r\n" .
+							"User-Agent: marta-plugin/1.0 (+https://martaonline.eu)\r\n" .
+							"Accept: text/xml\r\n" .
+							"Connection: close\r\n",
+						'content'          => $envelope,
+						'timeout'          => 8,
+						'ignore_errors'    => true,
+						'protocol_version' => 1.1,
+					),
+					'ssl'  => array(
+						'verify_peer'      => true,
+						'verify_peer_name' => true,
+						'SNI_enabled'      => true,
+					),
+				)
+			);
 
-			return $this->base_result( 'unreachable', null );
+			$capture_error = null;
+			set_error_handler(
+				static function ( $errno, $errstr ) use ( &$capture_error ) {
+					$capture_error = $errstr;
+					return true;
+				}
+			);
+			$body = @file_get_contents( 'https://ec.europa.eu/taxation_customs/vies/services/checkVatService', false, $ctx );
+			restore_error_handler();
+
+			if ( false === $body ) {
+				$error = 'stream_error: ' . ( $capture_error ? $capture_error : 'unknown' );
+				$body  = null;
+			} else {
+				$status_line = isset( $http_response_header[0] ) ? $http_response_header[0] : '';
+				if ( false === strpos( $status_line, ' 200 ' ) ) {
+					$error = 'stream_http_status: ' . $status_line;
+					$body  = null;
+				}
+			}
+		} else {
+			// Fallback: wp_remote_post (works on hosts with allow_url_fopen disabled and
+			// without the OpenSSL 3 close_notify issue).
+			$response = wp_remote_post(
+				'https://ec.europa.eu/taxation_customs/vies/services/checkVatService',
+				array(
+					'timeout'     => 8,
+					'httpversion' => '1.1',
+					'headers'     => array(
+						'Content-Type' => 'text/xml; charset=utf-8',
+						'SOAPAction'   => '',
+						'User-Agent'   => 'marta-plugin/1.0 (+https://martaonline.eu)',
+						'Accept'       => 'text/xml',
+					),
+					'body'        => $envelope,
+				)
+			);
+
+			if ( is_wp_error( $response ) ) {
+				$error = 'wp_error: ' . $response->get_error_message();
+			} else {
+				$http_code = (int) wp_remote_retrieve_response_code( $response );
+				$body      = (string) wp_remote_retrieve_body( $response );
+				if ( 200 !== $http_code || '' === $body ) {
+					$error = 'http_' . $http_code;
+					$body  = null;
+				}
+			}
 		}
 
-		$http_code = (int) wp_remote_retrieve_response_code( $response );
-		$body      = wp_remote_retrieve_body( $response );
-
-		if ( 200 !== $http_code || empty( $body ) ) {
-			$this->log_unreachable( $country_code, $vat_number, 'http_' . $http_code );
+		if ( null === $body ) {
+			$this->log_unreachable( $country_code, $vat_number, (string) $error );
 
 			return $this->base_result( 'unreachable', null );
 		}
