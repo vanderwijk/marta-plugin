@@ -98,12 +98,21 @@ class Marta_VAT_Tax {
 	 * @return bool
 	 */
 	public function should_apply_reverse_charge( string $billing_country, string $shop_country, ?array $payload, bool $is_eu, bool $is_valid_vat ): bool {
+		// Land waarvoor het btw-nummer is gevalideerd. De validator slaat
+		// Griekenland op als 'EL', terwijl WooCommerce 'GR' gebruikt.
+		$payload_country = ! empty( $payload['country_code'] ) ? strtoupper( (string) $payload['country_code'] ) : '';
+		$billing_norm    = ( 'GR' === $billing_country ) ? 'EL' : $billing_country;
+
 		return $is_valid_vat
 			&& $is_eu
-			&& ! empty( $payload['country_code'] )
+			&& '' !== $payload_country
 			&& $billing_country
 			&& $shop_country
-			&& $billing_country !== $shop_country;
+			&& $billing_country !== $shop_country
+			// Factuurland moet overeenkomen met het land waarvoor het btw-nummer is
+			// gevalideerd. Voorkomt onterechte vrijstelling bij een verschaalde
+			// (stale) sessie-payload als het factuurland zonder hervalidatie wijzigt.
+			&& $billing_norm === $payload_country;
 	}
 
 	/**
